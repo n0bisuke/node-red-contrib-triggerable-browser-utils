@@ -1,25 +1,27 @@
 {
-  "name": "node-red-contrib-browser-utils",
-  "version": "0.0.11",
-  "description": "A collection of Node-RED nodes for browser interaction",
-  "dependencies": {
-    "node-red-contrib-play-audio": "^2.5.0",
-    "body-parser": "^1.20.0"
-  },
+  "name": "node-red-contrib-triggerable-browser-utils",
+  "version": "0.1.0",
+  "description": "A fork of node-red-contrib-browser-utils with triggerable nodes for browser interaction (camera, microphone, file upload) via flows. Based on original work by IBM Corp. and contributors.",
+  "dependencies": {},
   "license": "Apache-2.0",
   "keywords": [
     "node-red",
     "microphone",
     "camera",
-    "upload",
-    "bluemix",
-    "watson"
+    "upload"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ibm-early-programs/node-red-contrib-browser-utils"
+    "url": "git+https://github.com/n0bisuke/node-red-contrib-triggerable-browser-utils.git"
   },
+  "homepage": "https://github.com/n0bisuke/node-red-contrib-triggerable-browser-utils#readme",
   "contributors": [
+    {
+      "name": "Nobisuke Sugawara（@n0bisuke）",
+      "email": "n0bisuke.issue293@slmail.me"
+    }
+  ],
+  "original-authors": [
     {
       "name": "Chris Parsons",
       "email": "christopherkparsons@gmail.com"
@@ -43,9 +45,9 @@
   ],
   "node-red": {
     "nodes": {
-      "fileinject": "./fileinject/fileinject.js",
-      "microphone": "./microphone/microphone.js",
-      "camera": "./camera/camera.js"
+      "triggerable-camera": "./triggerable-camera/triggerable-camera.js",
+      "triggerable-microphone": "./triggerable-microphone/triggerable-microphone.js",
+      "triggerable-fileinject": "./triggerable-fileinject/triggerable-fileinject.js"
     }
   }
 }

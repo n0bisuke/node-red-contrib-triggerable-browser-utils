@@ -1,0 +1,142 @@
+<script type="text/x-red" data-template-name="triggerable-fileinject">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="File Inject">
+    </div>
+    <div class="form-row file-upload-row">
+        <label for="node-input-file"><i class="fa fa-file"></i> File</label>
+        <div style="display: inline-block; width: 70%;">
+            <div id="node-input-file-container">
+                <div class="input-group">
+                    <input id="node-input-filename" type="text" class="red-ui-input" readonly>
+                    <div class="input-group-btn">
+                        <button id="node-input-select-file" class="red-ui-button red-ui-button-small">
+                            <i class="fa fa-file"></i> 選択...
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <input type="file" id="node-input-file-upload" style="display: none;">
+            <div class="file-status" id="file-upload-status"></div>
+        </div>
+    </div>
+    <input type="hidden" id="node-input-filedata">
+    <input type="hidden" id="node-input-mimetype">
+</script>
+
+<script type="text/x-red" data-help-name="triggerable-fileinject">
+    <p>A file inject node that can be triggered via inject node</p>
+    <p>Usage:</p>
+    <ol>
+        <li>Add the triggerable-fileinject node to your flow</li>
+        <li>Configure the node by uploading a file in the settings</li>
+        <li>Connect an inject node to trigger file sending</li>
+        <li>When triggered, the pre-configured file will be sent</li>
+    </ol>
+    <p>File will be sent as part of the <code>msg.payload</code> object, along with <code>msg.filename</code> and <code>msg.mimetype</code>.</p>
+</script>
+
+<style>
+    .file-status {
+        margin-top: 5px;
+        min-height: 20px;
+    }
+</style>
+
+<script type="text/javascript">
+    (function() {
+        RED.nodes.registerType('triggerable-fileinject', {
+            category: 'input',
+            defaults: {
+                name: {value: ''},
+                filename: {value: ''},
+                mimetype: {value: ''},
+                filedata: {value: ''} // Base64エンコードされたファイルデータ
+            },
+            color: 'rgb(254, 245, 136)',
+            inputs: 1,  // インジェクトノードからの入力を受け付ける
+            outputs: 1,
+            icon: 'fileinject.png',
+            paletteLabel: 'trig file inject',
+            label: function() {
+                return this.name || (this.filename ? "file: " + this.filename : 'triggerable file inject');
+            },
+            labelStyle: function() {
+                return this.name ? 'node_label_italic' : '';
+            },
+            button: {
+                onclick: function() {
+                    // ボタンをクリックしたら、直接ファイルを送信
+                    // ノードに入力を送信するのと同じ効果を持つ
+                    RED.comms.publish("inject", [this.id]);
+                }
+            },
+            oneditprepare: function() {
+                var node = this;
+                
+                // ファイル選択ボタンのイベント
+                $("#node-input-select-file").on("click", function() {
+                    $("#node-input-file-upload").click();
+                });
+                
+                // ファイル選択変更時のイベント
+                $("#node-input-file-upload").on("change", function() {
+                    var fileInput = this;
+                    if (fileInput.files.length > 0) {
+                        var file = fileInput.files[0];
+                        var statusDiv = $("#file-upload-status");
+                        statusDiv.html('<span><i class="fa fa-spinner fa-spin"></i> アップロード中...</span>');
+                        
+                        // フォームデータの作成
+                        var formData = new FormData();
+                        formData.append('file', file);
+                        
+                        // ファイルのアップロード
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', 'node-red-triggerable-fileinject/upload/' + node.id, true);
+                        xhr.setRequestHeader('x-filename', file.name);
+                        
+                        // 完了時の処理
+                        xhr.onload = function() {
+                            if (xhr.status === 200) {
+                                try {
+                                    var response = JSON.parse(xhr.responseText);
+                                    if (response.status === "ok") {
+                                        // 成功したらデータを保存
+                                        $("#node-input-filename").val(response.filename);
+                                        $("#node-input-filedata").val(response.filedata);
+                                        $("#node-input-mimetype").val(response.mimetype);
+                                        statusDiv.html('<span style="color:green;"><i class="fa fa-check"></i> アップロード完了: ' + response.filename + '</span>');
+                                    } else {
+                                        statusDiv.html('<span style="color:red;"><i class="fa fa-times"></i> エラー: ' + response.message + '</span>');
+                                    }
+                                } catch(e) {
+                                    statusDiv.html('<span style="color:red;"><i class="fa fa-times"></i> レスポンス解析エラー</span>');
+                                }
+                            } else {
+                                statusDiv.html('<span style="color:red;"><i class="fa fa-times"></i> アップロードエラー: ' + xhr.status + '</span>');
+                            }
+                        };
+                        
+                        // エラー時の処理
+                        xhr.onerror = function() {
+                            statusDiv.html('<span style="color:red;"><i class="fa fa-times"></i> 通信エラー</span>');
+                        };
+                        
+                        // ファイルを送信
+                        xhr.send(file);
+                    }
+                });
+                
+                // 既存のファイル名を表示
+                if (node.filename) {
+                    $("#node-input-filename").val(node.filename);
+                    $("#file-upload-status").html('<span style="color:green;"><i class="fa fa-check"></i> ファイル設定済み: ' + node.filename + '</span>');
+                }
+            },
+            oneditsave: function() {
+                // ここでは特に何もしない（隠しフィールドから自動的に値が保存される）
+            }
+        });
+    })();
+</script>

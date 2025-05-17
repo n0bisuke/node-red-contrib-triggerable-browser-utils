@@ -1,0 +1,360 @@
+<script type="text/x-red" data-template-name="triggerable-camera">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Camera Loop">
+    </div>
+    <div class="form-row">
+        <label for="node-input-interval"><i class="fa fa-clock-o"></i> Interval (ms)</label>
+        <input type="number" id="node-input-interval" placeholder="2000">
+    </div>
+    <!-- カメラ選択UI -->
+    <div class="form-row">
+        <label for="node-input-deviceId"><i class="fa fa-camera"></i> Camera</label>
+        <select id="node-input-deviceId">
+            <option value="">Default camera</option>
+        </select>
+        <button type="button" id="node-input-scan-cameras" class="red-ui-button">
+            <i class="fa fa-refresh"></i> Scan Cameras
+        </button>
+    </div>
+    <!-- 出力フォーマット選択 -->
+    <div class="form-row">
+        <label for="node-input-outputFormat"><i class="fa fa-file-image-o"></i> Output Format</label>
+        <select id="node-input-outputFormat">
+            <option value="buffer">Buffer (Default)</option>
+            <option value="base64">Base64 String</option>
+        </select>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="triggerable-camera">
+    <p>A camera node that can be controlled via inject node to capture images</p>
+    <p>Usage:</p>
+    <ol>
+        <li>Add the triggerable-camera node to your flow</li>
+        <li>Select which camera to use in the configuration</li>
+        <li>Choose output format: Buffer or Base64 string</li>
+        <li>Connect an inject node to trigger image capture</li>
+        <li>Simply press the inject button to take a picture</li>
+        <li>Add a debug node or image-output node to view the captured image</li>
+    </ol>
+    <p>The image is sent as the <code>msg.payload</code> object in the selected format:</p>
+    <ul>
+        <li><b>Buffer</b>: Binary buffer format, suitable for saving files or using with image nodes</li>
+        <li><b>Base64</b>: Text-based format, suitable for embedding in HTML or sending via HTTP</li>
+    </ul>
+    <p>Supported browsers</p>
+    <ul>
+      <li>Chrome</li>
+      <li>Firefox</li>
+    </ul>
+</script>
+
+<script type="text/javascript">
+    (function() {
+        // ブラウザの互換性対応
+        navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+        window.URL = window.URL || window.webkitURL || window.mozURL || window.msURL;
+
+        // DOM要素の作成
+        window.video = document.createElement('video')
+        window.canvas = document.createElement('canvas')
+        canvas.style.display = 'none'
+        var id
+        var stream = null
+        var loopInterval = null
+
+        // 利用可能なカメラデバイスをスキャンする関数
+        function scanCameraDevices(callback) {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+                console.error("このブラウザはデバイス列挙をサポートしていません");
+                callback([]);
+                return;
+            }
+
+            navigator.mediaDevices.enumerateDevices()
+                .then(function(devices) {
+                    // ビデオ入力デバイス（カメラ）のみをフィルタリング
+                    var cameras = devices.filter(function(device) {
+                        return device.kind === 'videoinput';
+                    });
+                    
+                    console.log("検出されたカメラ:", cameras);
+                    callback(cameras);
+                })
+                .catch(function(err) {
+                    console.error("デバイス列挙エラー:", err);
+                    callback([]);
+                });
+        }
+
+        // ビデオの再生準備が整ったときの処理
+        function onCanPlay(evt) {
+          console.log("video.oncanplay イベント発生");
+          video.removeEventListener('canplay', onCanPlay, false)
+          var width   = 320
+          var height  = video.videoHeight / (video.videoWidth / width)
+
+          if (isNaN(height)) {
+            height = width / (4 / 3)
+          }
+
+          video.setAttribute('width', width)
+          video.setAttribute('height', height)
+          canvas.setAttribute('width', width)
+          canvas.setAttribute('height', height)
+
+          // 画像をキャプチャ
+          captureFrame()
+        }
+
+        // 画像をキャプチャする処理
+        function captureFrame() {
+          console.log("captureFrame: 画像をキャプチャします");
+          var ctx = canvas.getContext('2d')
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+          // 画像をBlobに変換して送信
+          canvas.toBlob(function(blob) {
+            console.log("toBlob完了: " + blob.size + " bytes");
+            uploadRecord(id, blob)
+          }, 'image/png')
+        }
+
+        // ストリーム取得後の処理
+        function onStreamReady(id, videoStream) {
+          console.log("onStreamReady: ストリームを取得しました");
+          stream = videoStream
+          try {
+            video.srcObject = stream;
+          } catch (error) {
+            video.src = window.URL.createObjectURL(stream)
+          }
+
+          video.addEventListener('canplay', onCanPlay, false)
+          video.play()
+        }
+
+        // ノードのステータス更新
+        function setCameraStatus(record, id, text) {
+          text = text || 'taking picture...'
+          console.log("setCameraStatus: " + text);
+          $.getJSON('node-red-triggerable-camera/status', {status: record, id: id, text: text})
+            .done(function () {})
+            .fail(function (err) {
+              console.log("ステータス更新エラー:", err);
+            })
+            .always(function () {});
+        }
+
+        // カメラを起動する処理（デバイスID対応）
+        function startCamera(id, deviceId) {
+          console.log("startCamera: カメラを起動します (node ID: " + id + ", device ID: " + (deviceId || "default") + ")");
+          if (stream) {
+            console.log("カメラはすでに起動しています - 再キャプチャします");
+            captureFrame(); // すでにカメラが動いている場合は即座に撮影
+            return;
+          }
+          
+          // カメラの制約を設定
+          var constraints = {
+            video: true,
+            audio: false
+          };
+          
+          // 特定のカメラが指定されている場合
+          if (deviceId) {
+            constraints.video = {
+              deviceId: { exact: deviceId }
+            };
+          }
+          
+          navigator.mediaDevices.getUserMedia(constraints)
+            .then(function(videoStream) {
+              console.log("カメラストリームを取得しました");
+              setCameraStatus(true, id, 'camera active');
+              onStreamReady(id, videoStream);
+            })
+            .catch(function(err) {
+                console.error("カメラエラー:", err);
+                window.alert('指定したカメラにアクセスできないか、ブラウザがサポートしていません');
+            })
+        }
+
+        // カメラを停止する処理
+        function stopCamera() {
+          console.log("stopCamera: カメラを停止します");
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+            
+            if (video.srcObject) {
+              video.srcObject = null;
+            }
+          }
+          
+          if (loopInterval) {
+            clearInterval(loopInterval);
+            loopInterval = null;
+          }
+        }
+
+        // 連続撮影を開始する処理
+        function startLoop(nodeId, interval) {
+          console.log("startLoop: 連続撮影を開始します (間隔: " + interval + "ms)");
+          stopLoop();
+          loopInterval = setInterval(function() {
+            if (stream) {
+              console.log("連続撮影: フレームをキャプチャします");
+              captureFrame();
+            }
+          }, interval);
+          setCameraStatus(true, nodeId, 'loop active: ' + interval + 'ms');
+        }
+
+        // 連続撮影を停止する処理
+        function stopLoop() {
+          if (loopInterval) {
+            console.log("stopLoop: 連続撮影を停止します");
+            clearInterval(loopInterval);
+            loopInterval = null;
+          }
+        }
+
+        // 画像データをサーバーに送信する処理
+        function uploadRecord(id, blob) {
+            console.log("uploadRecord: 画像データを送信します (size: " + blob.size + " bytes)");
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', 'node-red-triggerable-camera/' + id, true);
+            
+            // 出力フォーマット情報をヘッダーに追加
+            var node = RED.nodes.node(id);
+            if (node && node.outputFormat) {
+                xhr.setRequestHeader('x-output-format', node.outputFormat);
+            }
+            
+            // エラー処理を追加
+            xhr.onerror = function() {
+                console.error("画像送信中にエラーが発生しました");
+            };
+            
+            // 完了イベント
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    console.log("画像の送信に成功しました");
+                } else {
+                    console.error("画像送信失敗: " + xhr.status);
+                }
+            };
+            
+            xhr.send(blob);
+        }
+
+        // コマンドメッセージの処理
+        RED.comms.subscribe("triggerable-camera", function(topic, msg) {
+            console.log("RED.comms.subscribe: メッセージを受信しました", msg);
+            if (msg.id) {
+                id = msg.id;
+                
+                // デバイスIDはメッセージから取得
+                var deviceId = msg.deviceId || "";
+                
+                // デフォルトではキャプチャコマンドとみなす
+                var command = msg.command || "capture";
+                console.log("コマンド処理: " + command);
+                
+                switch(command) {
+                    case "start":
+                        startCamera(id, deviceId);
+                        if (msg.interval) {
+                            startLoop(id, msg.interval);
+                        }
+                        break;
+                    case "stop":
+                        stopCamera();
+                        setCameraStatus(false, id, 'stopped');
+                        break;
+                    case "capture":
+                        // キャプチャは常にカメラ起動から
+                        startCamera(id, deviceId);
+                        break;
+                    case "loop":
+                        if (!stream) {
+                            startCamera(id, deviceId);
+                        }
+                        if (msg.interval) {
+                            startLoop(id, msg.interval);
+                        }
+                        break;
+                    default:
+                        console.log("不明なコマンド: " + command);
+                        startCamera(id, deviceId); // 不明なコマンドでもカメラを起動
+                }
+            } else {
+                console.error("メッセージにノードIDがありません");
+            }
+        });
+
+        // ノードの登録
+        RED.nodes.registerType('triggerable-camera', {
+            category: 'input',
+            defaults: {
+                name: {value: ''},
+                interval: {value: 2000, validate: RED.validators.number()},
+                deviceId: {value: ''}, // カメラデバイスIDの設定
+                outputFormat: {value: 'buffer'} // 出力フォーマットの設定を追加
+            },
+            color: 'rgb(215, 201, 194)',
+            inputs: 1,  // インジェクトノードからの入力を受け付ける
+            outputs: 1,
+            icon: 'camera.png',
+            paletteLabel: 'trig camera',
+            label: function() {
+                return this.name || 'triggerable camera';
+            },
+            labelStyle: function() {
+                return this.name ? 'node_label_italic' : '';
+            },
+            button: {
+                onclick: function(){
+                    id = this.id;
+                    console.log("ノードボタンがクリックされました: " + id);
+                    // デバイスIDもボタンクリック時に使用
+                    startCamera(id, this.deviceId);
+                }
+            },
+            oneditprepare: function() {
+                var node = this;
+                
+                // カメラをスキャンするボタン
+                $("#node-input-scan-cameras").on("click", function() {
+                    var select = $("#node-input-deviceId");
+                    select.empty();
+                    select.append($("<option></option>").val("").text("Default camera"));
+                    
+                    scanCameraDevices(function(cameras) {
+                        cameras.forEach(function(camera) {
+                            var option = $("<option></option>")
+                                .val(camera.deviceId)
+                                .text(camera.label || "Camera " + (select.find("option").length));
+                            select.append(option);
+                        });
+                        
+                        // 保存されている値を選択
+                        if (node.deviceId) {
+                            select.val(node.deviceId);
+                        }
+                    });
+                });
+                
+                // 初期化時に一度スキャン
+                $("#node-input-scan-cameras").trigger("click");
+                
+                // 出力フォーマットの初期値を設定
+                if (node.outputFormat) {
+                    $("#node-input-outputFormat").val(node.outputFormat);
+                }
+            }
+        });
+    })();
+</script>

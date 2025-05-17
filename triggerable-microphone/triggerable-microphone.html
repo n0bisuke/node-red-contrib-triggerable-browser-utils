@@ -1,0 +1,269 @@
+<script type="text/x-red" data-template-name="triggerable-microphone">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Microphone">
+    </div>
+    <div class="form-row">
+        <label for="node-input-deviceId"><i class="fa fa-microphone"></i> Microphone</label>
+        <select id="node-input-deviceId">
+            <option value="">Default microphone</option>
+        </select>
+        <button type="button" id="node-input-scan-mics" class="red-ui-button">
+            <i class="fa fa-refresh"></i> Scan Microphones
+        </button>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="triggerable-microphone">
+    <p>A microphone node that can be controlled via inject node to record audio</p>
+    <p>Usage:</p>
+    <ol>
+        <li>Note - you must be using <code>https</code> to record</li>
+        <li>Add the triggerable-microphone node to your flow</li>
+        <li>Select which microphone to use in the configuration</li>
+        <li>Connect an inject node to trigger recording</li>
+        <li>First trigger starts recording, second trigger stops recording</li>
+        <li>Or, click the <code>button</code> on the node to toggle recording</li>
+    </ol>
+    <p>The recorded audio is stored in the nodes <code>msg.payload</code> object</p>
+    <p>Supported output formats:</p>
+    <ul>
+        <li>WAV</li>
+    </ul>
+</script>
+
+<script type="text/javascript">
+    (function() {
+        navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+        window.AudioContext = window.AudioContext || window.webkitAudioContext || window.mozAudioContext || window.oAudioContext || window.msAudioContext;;
+
+        window.URL = window.URL || window.webkitURL || window.mozURL || window.msURL;
+
+        const MICSTATUS = {
+            OFF : '1',
+            ON  : '2',
+            CONTEXTERROR : '4'
+        }
+
+        $.getScript('triggerable-microphone/js/recorder.js')
+          .done(function(script, textStatus) {
+            // script loaded, do nothing
+          })
+          .fail(function(jqxhr, settings, exception) {
+            console.log('FAILED to load recorder script: ' + exception);
+          });
+
+        var instances = {};
+        var audio_context = new AudioContext();
+        var activeStreams = {}; // 使用中のストリームを追跡
+
+        // 利用可能なマイクデバイスをスキャンする
+        function scanAudioDevices(callback) {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+                console.error("このブラウザはデバイス列挙をサポートしていません");
+                callback([]);
+                return;
+            }
+
+            navigator.mediaDevices.enumerateDevices()
+                .then(function(devices) {
+                    // オーディオ入力デバイス（マイク）のみをフィルタリング
+                    var microphones = devices.filter(function(device) {
+                        return device.kind === 'audioinput';
+                    });
+                    
+                    console.log("検出されたマイク:", microphones);
+                    callback(microphones);
+                })
+                .catch(function(err) {
+                    console.error("デバイス列挙エラー:", err);
+                    callback([]);
+                });
+        }
+
+        function checkAudioContextState() {
+            var p = new Promise(function resolver(resolve, reject) {
+              if (audio_context.state && 'running' !== audio_context.state && audio_context.resume) {
+                  audio_context.resume().then(() => {
+                      resolve();
+                  });
+              } else {
+                resolve();
+              }
+            });
+            return p;
+        }
+
+        function startRecording(id, stream) {
+            checkAudioContextState()
+            .then(() => {
+                var input = audio_context.createMediaStreamSource(stream);
+                instances[id] = new Recorder(input);
+                instances[id] && instances[id].record();
+            })
+            .catch(() => {
+                console.log('Audio Context Error');
+                setMicStatus(MICSTATUS.CONTEXTERROR, id);
+            });
+        }
+
+        function stopRecording(id, callback) {
+            if(!instances[id]) {
+                return;
+            }
+
+            instances[id].stop();
+
+            instances[id].exportWAV(function(blob) {
+                instances[id].clear();
+                instances[id] = null;
+
+                callback && callback(id, blob);
+            });
+
+            setMicStatus(MICSTATUS.OFF, id);
+            
+            // ストリームを停止
+            if (activeStreams[id]) {
+                activeStreams[id].getTracks().forEach(track => track.stop());
+                delete activeStreams[id];
+            }
+        }
+
+        function getRecorder(id, deviceId) {
+        //   console.log("マイクを起動します（デバイスID: " + deviceId + "）");
+          
+          // マイクの制約を設定
+          var constraints = {
+            audio: true,
+            video: false
+          };
+          
+          // 特定のマイクを指定
+          if (deviceId) {
+            constraints.audio = {
+              deviceId: { exact: deviceId }
+            };
+          }
+          
+          navigator.mediaDevices.getUserMedia(constraints)
+            .then(function(stream) {
+              setMicStatus(MICSTATUS.ON, id);
+              activeStreams[id] = stream; // ストリームを保存
+              startRecording(id, stream);
+            })
+            .catch(function(err) {
+                window.alert('指定されたマイクを使用できないか、ブラウザーがマイクの使用をサポートしていません');
+                console.log(err);
+            });
+        }
+
+        function uploadRecord(id, blob) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', 'node-red-triggerable-microphone/' + id, true);
+            xhr.send(blob);
+        }
+
+        function setMicStatus(record, id) {
+          $.getJSON('node-red-triggerable-microphone/status', {status: record, id: id})
+            .done(function() {})
+            .fail(function(err) {
+              console.log(err);
+            })
+            .always(function() {});
+        }
+
+        // トリガーメッセージの処理
+        RED.comms.subscribe("triggerable-microphone", function(topic, msg) {
+            // console.log("RED.comms.subscribe: マイクメッセージを受信しました", msg);
+            if (msg.id) {
+                var id = msg.id;
+                var deviceId = msg.deviceId || '';
+                var command = msg.command || "toggle";
+                
+                // console.log("マイクコマンド処理: " + command + " (デバイス: " + deviceId + ")");
+                
+                switch(command) {
+                    case "start":
+                        if (!instances[id]) {
+                            getRecorder(id, deviceId);
+                        }
+                        break;
+                    case "stop":
+                        if (instances[id]) {
+                            stopRecording(id, uploadRecord);
+                        }
+                        break;
+                    case "toggle":
+                        if (instances[id]) {
+                            stopRecording(id, uploadRecord);
+                        } else {
+                            getRecorder(id, deviceId);
+                        }
+                        break;
+                }
+            } else {
+                console.error("メッセージにノードIDがありません");
+            }
+        });
+
+        RED.nodes.registerType('triggerable-microphone', {
+            category: 'input',
+            defaults: {
+                name: {value: ''},
+                deviceId: {value: ''} // マイクデバイスIDを追加
+            },
+            color: 'rgb(204, 230, 171)',
+            inputs: 1,  // インジェクトノードからの入力を受け付ける
+            outputs: 1,
+            icon: 'microphone.png',
+            paletteLabel: 'trig mic',
+            label: function() {
+                return this.name || 'triggerable microphone';
+            },
+            labelStyle: function() {
+                return this.name ? 'node_label_italic' : '';
+            },
+            button: {
+                onclick: function() {
+                    // ボタンクリックでトグル動作
+                    var id = this.id;
+                    var deviceId = this.deviceId;
+                    
+                    if (instances[id]) {
+                        stopRecording(id, uploadRecord);
+                    } else {
+                        getRecorder(id, deviceId);
+                    }
+                }
+            },
+            oneditprepare: function() {
+                var node = this;
+                
+                // マイクをスキャンするボタン
+                $("#node-input-scan-mics").on("click", function() {
+                    var select = $("#node-input-deviceId");
+                    select.empty();
+                    select.append($("<option></option>").val("").text("Default microphone"));
+                    
+                    scanAudioDevices(function(microphones) {
+                        microphones.forEach(function(mic) {
+                            var option = $("<option></option>")
+                                .val(mic.deviceId)
+                                .text(mic.label || "マイク " + (select.find("option").length));
+                            select.append(option);
+                        });
+                        
+                        // 保存されている値を選択
+                        if (node.deviceId) {
+                            select.val(node.deviceId);
+                        }
+                    });
+                });
+                
+                // 初期化時に一度スキャン
+                $("#node-input-scan-mics").trigger("click");
+            }
+        });
+    })();
+</script>
